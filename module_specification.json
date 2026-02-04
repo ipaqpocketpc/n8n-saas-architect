@@ -1,0 +1,85 @@
+{
+  "module_name": "Website Intelligence Analyzer",
+  "description": "Een standalone module die een URL accepteert, deze live analyseert via AI, en de resultaten structureert in drie zakelijke kerninzichten.",
+  "target_language": "Dutch (nl-NL)",
+  "backend_logic": {
+    "api_provider": "Google Gemini",
+    "model": "gemini-2.5-flash",
+    "required_tools": [
+      "googleSearch"
+    ],
+    "prompt_template": {
+      "system_instruction": "Jij bent een expert business analist. Je taak is om websites te scannen en de essentie van een bedrijf samen te vatten in gestructureerde data.",
+      "user_prompt": "Ga naar de website ${URL} via Google Search.\nMaak een uitgebreide zakelijke analyse in het Nederlands.\n\nGebruik EXACT deze structuur met nummers en dikgedrukte koppen (wijk hier niet van af, dit is nodig voor parsing):\n\n1. **Kernactiviteit:** [Beschrijf uitgebreid wat ze doen, hun producten/diensten en hun unieke waarde]\n2. **Doelgroep:** [Beschrijf gedetailleerd wie de klant is, B2B/B2C, en demografische kenmerken]\n3. **Repeterende taken:** [Lijst met specifieke administratieve processen, pijnpunten en taken die geautomatiseerd kunnen worden]\n\nHoud de toon professioneel, zakelijk en objectief."
+    }
+  },
+  "data_processing": {
+    "parsing_strategy": "Regex Split",
+    "regex_pattern": "/(?:^|\\n)\\s*\\d+\\.\\s+\\*\\*(.*?)\\*\\*:?/",
+    "extraction_rules": [
+      {
+        "key": "activity",
+        "marker": "Kernactiviteit",
+        "fallback_index": 1
+      },
+      {
+        "key": "audience",
+        "marker": "Doelgroep",
+        "fallback_index": 3
+      },
+      {
+        "key": "tasks",
+        "marker": "Repeterende taken",
+        "fallback_index": 5
+      }
+    ]
+  },
+  "frontend_ui": {
+    "layout_style": "Vertical Stack",
+    "components": [
+      {
+        "id": "card_activity",
+        "title": "Kernactiviteit",
+        "subtitle": "Wat doen ze precies?",
+        "icon": "Briefcase",
+        "theme": {
+          "color": "blue",
+          "bg_class": "bg-blue-500/10",
+          "text_class": "text-blue-400",
+          "border_hover": "hover:border-blue-500/30"
+        }
+      },
+      {
+        "id": "card_audience",
+        "title": "Doelgroep",
+        "subtitle": "Wie is de klant?",
+        "icon": "Users",
+        "theme": {
+          "color": "purple",
+          "bg_class": "bg-purple-500/10",
+          "text_class": "text-purple-400",
+          "border_hover": "hover:border-purple-500/30"
+        }
+      },
+      {
+        "id": "card_tasks",
+        "title": "Automatisering Kansen",
+        "subtitle": "Repeterende taken & Processen",
+        "icon": "ClipboardList",
+        "theme": {
+          "color": "pink",
+          "bg_class": "bg-pink-500/10",
+          "text_class": "text-pink-400",
+          "border_hover": "hover:border-pink-500/30"
+        }
+      }
+    ],
+    "typography": {
+      "renderer": "RichTextRenderer",
+      "rules": {
+        "bold": "Renders **text** as <strong>text</strong>",
+        "lists": "Renders lines starting with * or - as styled bullet points"
+      }
+    }
+  }
+}
