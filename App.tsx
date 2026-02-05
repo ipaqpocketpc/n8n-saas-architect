@@ -43,6 +43,7 @@ import {
 } from 'lucide-react';
 import { generateSaaSIdeas, analyzeWebsite } from './services/geminiService';
 import { SaaSIdea, UserSettings, GOOGLE_MODELS, OPENROUTER_MODELS, ApiProvider } from './types';
+import { MarkdownRenderer, MarkdownInline } from './components/MarkdownRenderer';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 
@@ -77,84 +78,112 @@ const Tooltip: React.FC<{
   );
 };
 
-// Hulpfunctie om analyse te parsen (ROBUUSTE VERSIE)
+// Hulpfunctie om markdown naar HTML te converteren voor Word export
+const markdownToHtml = (text: string): string => {
+  if (!text) return '';
+
+  return text
+    // Headers
+    .replace(/^### (.*$)/gm, '<h4 style="font-size:12pt;font-weight:bold;margin:10px 0 5px 0;">$1</h4>')
+    .replace(/^## (.*$)/gm, '<h3 style="font-size:14pt;font-weight:bold;margin:15px 0 5px 0;">$1</h3>')
+    .replace(/^# (.*$)/gm, '<h2 style="font-size:16pt;font-weight:bold;margin:20px 0 10px 0;">$1</h2>')
+    // Bold
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    // Italic
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    // Inline code
+    .replace(/`(.*?)`/g, '<code style="background:#f0f0f0;padding:2px 4px;border-radius:3px;font-family:monospace;">$1</code>')
+    // Bullet lists
+    .replace(/^\* (.*$)/gm, '<li style="margin:5px 0;">$1</li>')
+    .replace(/^- (.*$)/gm, '<li style="margin:5px 0;">$1</li>')
+    // Numbered lists (basic)
+    .replace(/^\d+\. (.*$)/gm, '<li style="margin:5px 0;">$1</li>')
+    // Wrap consecutive list items in ul
+    .replace(/(<li[^>]*>.*<\/li>\n?)+/g, '<ul style="margin:10px 0 10px 20px;padding-left:0;">$&</ul>')
+    // Paragraphs (double newlines)
+    .replace(/\n\n/g, '</p><p style="margin:10px 0;">')
+    // Single newlines to <br>
+    .replace(/\n/g, '<br/>')
+    // Wrap in paragraph if not already
+    .replace(/^(?!<[hup])(.+)$/gm, '<p style="margin:10px 0;">$1</p>');
+};
+
+// Hulpfunctie om analyse te parsen (ROBUUSTE VERSIE v2)
 const parseAnalysisText = (text: string) => {
   if (!text) return { activity: '', audience: '', tasks: '' };
-  
-  // 1. Verwijder inleidende babbel (alles voor de eerste "1.")
-  const cleanText = text.replace(/^[\s\S]*?(?=1\.)/, '');
 
-  // Helper om een sectie te vinden op basis van flexibele keywords
-  // Zoekt naar: "Getal. [Optioneel Bold]Keyword[Optioneel Bold][Optioneel Dubbele Punt] Content"
-  const extractSection = (keywords: string) => {
-    // Regex uitleg:
-    // \d+\.\s*           -> Zoek naar een nummer, punt en spaties (bijv "1. ")
-    // (?:\*\*)?          -> Optioneel dikgedrukt start (**)
-    // .*?                -> Misschien wat tekst ervoor
-    // (${keywords})      -> De zoekterm (bijv Kernactiviteit)
-    // .*?                -> Misschien wat tekst erna
-    // (?:\*\*)?          -> Optioneel dikgedrukt eind (**)
-    // :?                 -> Optionele dubbele punt
-    // \s*                -> Spaties
-    // ([\s\S]*?)         -> CAPTURE GROUP 1: De inhoud die we willen
-    // (?=(?:\n\s*\d+\.)|$) -> Stop als we een nieuw nummer zien (bijv "2.") OF het einde van de tekst
-    
-    const regex = new RegExp(`\\d+\\.\\s*(?:\\*\\*)?.*?(${keywords}).*?(?:\\*\\*)?:?\\s*([\\s\\S]*?)(?=(?:\\n\\s*\\d+\\.)|$)`, 'i');
-    const match = cleanText.match(regex);
-    return match ? match[2].trim() : '';
+  // Definieer section header patterns (zoeken naar genummerde headers)
+  const activityPatterns = [
+    /(?:^|\n)\s*1\.?\s*\*?\*?\s*kernactiviteit\s*\*?\*?\s*:?\s*/i,
+    /(?:^|\n)\s*\*?\*?\s*kernactiviteit\s*\*?\*?\s*:?\s*/i,
+  ];
+  const audiencePatterns = [
+    /(?:^|\n)\s*2\.?\s*\*?\*?\s*doelgroep\s*\*?\*?\s*:?\s*/i,
+    /(?:^|\n)\s*\*?\*?\s*doelgroep\s*\*?\*?\s*:?\s*/i,
+  ];
+  const tasksPatterns = [
+    /(?:^|\n)\s*3\.?\s*\*?\*?\s*(?:repeterende\s*)?taken\s*\*?\*?\s*:?\s*/i,
+    /(?:^|\n)\s*\*?\*?\s*(?:repeterende\s*)?taken\s*\*?\*?\s*:?\s*/i,
+    /(?:^|\n)\s*3\.?\s*\*?\*?\s*(?:automatisering\s*)?kansen\s*\*?\*?\s*:?\s*/i,
+  ];
+
+  // Vind sectie met patterns
+  const findSectionByPattern = (patterns: RegExp[], nextPatterns: RegExp[][]): string => {
+    // Zoek naar de eerste match van onze patterns
+    let matchResult: { index: number; endIndex: number } | null = null;
+
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match && match.index !== undefined) {
+        const endOfMatch = match.index + match[0].length;
+        if (!matchResult || match.index < matchResult.index) {
+          matchResult = { index: match.index, endIndex: endOfMatch };
+        }
+        break; // Gebruik eerste pattern die matcht
+      }
+    }
+
+    if (!matchResult) return '';
+
+    // Vind waar de volgende sectie begint
+    let nextSectionStart = text.length;
+
+    for (const nextPatternGroup of nextPatterns) {
+      for (const pattern of nextPatternGroup) {
+        // Zoek alleen NA de huidige sectie content start
+        const searchText = text.substring(matchResult.endIndex);
+        const match = searchText.match(pattern);
+        if (match && match.index !== undefined) {
+          const absolutePos = matchResult.endIndex + match.index;
+          if (absolutePos < nextSectionStart) {
+            nextSectionStart = absolutePos;
+          }
+          break; // Eerste match is genoeg per pattern group
+        }
+      }
+    }
+
+    // Extract content
+    let content = text.substring(matchResult.endIndex, nextSectionStart).trim();
+
+    // Clean up: verwijder eventuele leading formatting
+    content = content
+      .replace(/^[\d\.\)\-\s]+/, '') // Leading nummers
+      .replace(/^\*\*/, '') // Leading **
+      .replace(/\*\*$/, '') // Trailing **
+      .trim();
+
+    return content;
   };
 
-  const activity = extractSection('Kernactiviteit|Activiteit');
-  const audience = extractSection('Doelgroep|Klanten');
-  const tasks = extractSection('Repeterende|Taken|Processen|Automatisering|Kansen');
+  // Parse elke sectie
+  const activity = findSectionByPattern(activityPatterns, [audiencePatterns, tasksPatterns]);
+  const audience = findSectionByPattern(audiencePatterns, [tasksPatterns]);
+  const tasks = findSectionByPattern(tasksPatterns, []);
 
   return { activity, audience, tasks };
 };
 
-// Hulpcomponent om tekst met **dikgedrukt** te renderen
-const FormattedText: React.FC<{ text: string }> = ({ text }) => {
-  if (!text) return null;
-  const parts = text.split(/(\*\*.*?\*\*)/g);
-  return (
-    <span>
-      {parts.map((part, i) => {
-        if (part.startsWith('**') && part.endsWith('**')) {
-          return <strong key={i} className="font-bold text-white">{part.slice(2, -2)}</strong>;
-        }
-        return <span key={i}>{part}</span>;
-      })}
-    </span>
-  );
-};
-
-// Geavanceerde renderer voor paragrafen en lijsten
-const RichTextRenderer: React.FC<{ text: string, className?: string }> = ({ text, className = "text-slate-300" }) => {
-  if (!text) return null;
-  const lines = text.split('\n').filter(line => line.trim() !== '');
-
-  return (
-    <div className={`space-y-2 ${className}`}>
-      {lines.map((line, index) => {
-        const trimmed = line.trim();
-        // Check voor bullet points (*, -, of •) of genummerde lijsten binnen de tekst
-        if (trimmed.match(/^[\*\-•]\s/) || trimmed.match(/^\d+\.\s/)) {
-           const content = trimmed.replace(/^[\*\-•]\s/, '').replace(/^\d+\.\s/, '');
-           return (
-             <div key={index} className="flex items-start gap-2 pl-2">
-               <div className="mt-2 w-1.5 h-1.5 rounded-full bg-current opacity-60 flex-shrink-0"></div>
-               <span className="leading-relaxed"><FormattedText text={content} /></span>
-             </div>
-           );
-        }
-        return (
-          <p key={index} className="leading-relaxed text-base">
-            <FormattedText text={trimmed} />
-          </p>
-        );
-      })}
-    </div>
-  );
-};
 
 const WebsiteAnalysisCard: React.FC<{ analysis: string, url: string }> = ({ analysis, url }) => {
   const { activity, audience, tasks } = parseAnalysisText(analysis);
@@ -171,8 +200,8 @@ const WebsiteAnalysisCard: React.FC<{ analysis: string, url: string }> = ({ anal
            </div>
            <h3 className="text-indigo-200 font-bold text-xl">Bedrijfsanalyse: {url}</h3>
         </div>
-        <div className="prose prose-invert max-w-none text-slate-300">
-          <RichTextRenderer text={analysis} />
+        <div className="prose prose-invert max-w-none">
+          <MarkdownRenderer content={analysis} variant="dark" />
         </div>
       </div>
     );
@@ -205,7 +234,7 @@ const WebsiteAnalysisCard: React.FC<{ analysis: string, url: string }> = ({ anal
             </div>
           </div>
           <div className="pl-1">
-             <RichTextRenderer text={activity || "Geen details gevonden."} />
+             <MarkdownRenderer content={activity || "Geen details gevonden."} variant="dark" />
           </div>
         </div>
 
@@ -225,7 +254,7 @@ const WebsiteAnalysisCard: React.FC<{ analysis: string, url: string }> = ({ anal
             </div>
           </div>
           <div className="pl-1">
-             <RichTextRenderer text={audience || "Geen details gevonden."} />
+             <MarkdownRenderer content={audience || "Geen details gevonden."} variant="dark" />
           </div>
         </div>
 
@@ -246,7 +275,7 @@ const WebsiteAnalysisCard: React.FC<{ analysis: string, url: string }> = ({ anal
             </div>
           </div>
           <div className="pl-1 relative z-10">
-             <RichTextRenderer text={tasks || "Geen details gevonden."} />
+             <MarkdownRenderer content={tasks || "Geen details gevonden."} variant="dark" />
           </div>
         </div>
       </div>
@@ -412,31 +441,31 @@ const App: React.FC = () => {
         <h2>1. Bedrijfsanalyse</h2>
         <div class="box">
           <h3>Kernactiviteit</h3>
-          <p>${activity}</p>
+          ${markdownToHtml(activity)}
           <h3>Doelgroep</h3>
-          <p>${audience}</p>
+          ${markdownToHtml(audience)}
           <h3>Automatisering Kansen</h3>
-          <p>${tasks}</p>
+          ${markdownToHtml(tasks)}
         </div>
         ` : ''}
 
         <h2>2. Het SaaS Concept</h2>
         <h3>Het Probleem</h3>
-        <p>${selectedIdea.blueprint.painPoint}</p>
+        ${markdownToHtml(selectedIdea.blueprint.painPoint)}
         <h3>De Oplossing & Timing</h3>
-        <p>${selectedIdea.blueprint.whyNow}</p>
-        
+        ${markdownToHtml(selectedIdea.blueprint.whyNow)}
+
         <div class="box">
           <h3>MVP Features</h3>
           <ul>
-            ${selectedIdea.blueprint.mvpFeatures.map(f => `<li>${f}</li>`).join('')}
+            ${selectedIdea.blueprint.mvpFeatures.map(f => `<li>${markdownToHtml(f)}</li>`).join('')}
           </ul>
         </div>
 
         <h2>3. De Techniek</h2>
         <div class="box">
           <h3>Automatisering Workflow (n8n)</h3>
-          <p>${selectedIdea.blueprint.automation}</p>
+          ${markdownToHtml(selectedIdea.blueprint.automation)}
           <p><strong>Benodigde Nodes:</strong> ${selectedIdea.blueprint.n8nNodes.join(', ')}</p>
         </div>
 
@@ -448,14 +477,16 @@ const App: React.FC = () => {
              </td>
              <td>
                <h3>Marketing Kanalen</h3>
-               <p>${selectedIdea.blueprint.marketingChannels.join(', ')}</p>
+               <ul>${selectedIdea.blueprint.marketingChannels.map(m => `<li>${markdownToHtml(m)}</li>`).join('')}</ul>
              </td>
            </tr>
         </table>
 
         <h2>4. User Experience</h2>
-        <p><strong>Abstractie:</strong> ${selectedIdea.blueprint.abstraction}</p>
-        <p><strong>Polish (Eindproduct):</strong> ${selectedIdea.blueprint.polish}</p>
+        <h3>Abstractie</h3>
+        ${markdownToHtml(selectedIdea.blueprint.abstraction)}
+        <h3>Eindproduct (Polish)</h3>
+        ${markdownToHtml(selectedIdea.blueprint.polish)}
         
         <br/><br/>
         <p style="font-size:9pt; color:#999; text-align:center;">Gegenereerd met n8n SaaS Architect</p>
@@ -777,18 +808,18 @@ const App: React.FC = () => {
                            <AlertCircle size={20} /> Het Pijnpunt
                            <Tooltip content="Het specifieke probleem dat de gebruiker ervaart en waarvoor ze willen betalen."><HelpCircle size={14} className="text-slate-600" /></Tooltip>
                         </div>
-                        <p className="text-slate-300 leading-relaxed text-sm md:text-base">
-                          {selectedIdea.blueprint.painPoint}
-                        </p>
+                        <div className="text-sm md:text-base">
+                          <MarkdownRenderer content={selectedIdea.blueprint.painPoint} variant="dark" />
+                        </div>
                      </div>
                      <div>
                         <div className="flex items-center gap-2 mb-3 text-green-400 font-semibold">
                            <Target size={20} /> De Oplossing (Why Now?)
                            <Tooltip content="Waarom is dit nu relevant (markt trend)?"><HelpCircle size={14} className="text-slate-600" /></Tooltip>
                         </div>
-                        <p className="text-slate-300 leading-relaxed text-sm md:text-base">
-                          {selectedIdea.blueprint.whyNow}
-                        </p>
+                        <div className="text-sm md:text-base">
+                          <MarkdownRenderer content={selectedIdea.blueprint.whyNow} variant="dark" />
+                        </div>
                      </div>
                   </div>
                 </div>
@@ -804,7 +835,9 @@ const App: React.FC = () => {
                         <div className="mt-1 w-5 h-5 rounded-full bg-indigo-500/20 flex items-center justify-center text-indigo-400 text-xs font-bold shrink-0">
                           {i + 1}
                         </div>
-                        <span className="text-slate-300 text-sm">{feature}</span>
+                        <div className="text-slate-300 text-sm flex-1">
+                          <MarkdownInline content={feature} variant="dark" />
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -819,9 +852,9 @@ const App: React.FC = () => {
                    <div className="space-y-6 relative z-10">
                       <div>
                         <div className="text-sm font-semibold text-slate-400 mb-2 uppercase tracking-wide">De Logica</div>
-                        <p className="text-slate-300 leading-relaxed bg-slate-950/30 p-4 rounded-lg border border-slate-700/50">
-                          {selectedIdea.blueprint.automation}
-                        </p>
+                        <div className="bg-slate-950/30 p-4 rounded-lg border border-slate-700/50">
+                          <MarkdownRenderer content={selectedIdea.blueprint.automation} variant="dark" />
+                        </div>
                       </div>
                       <div>
                         <div className="text-sm font-semibold text-slate-400 mb-3 uppercase tracking-wide flex items-center gap-2">
@@ -866,7 +899,7 @@ const App: React.FC = () => {
                       {selectedIdea.blueprint.marketingChannels.map((channel, i) => (
                         <li key={i} className="flex items-start gap-2 text-sm text-slate-300">
                            <CheckCircle2 size={16} className="text-pink-500 mt-0.5 shrink-0" />
-                           {channel}
+                           <span className="flex-1"><MarkdownInline content={channel} variant="dark" /></span>
                         </li>
                       ))}
                    </ul>
@@ -877,9 +910,9 @@ const App: React.FC = () => {
                      <Gift size={18} className="text-purple-400" /> Het Product (Polish)
                      <Tooltip content="Wat de klant uiteindelijk ziet/krijgt (bijv. PDF, Dashboard, Email)."><HelpCircle size={14} className="text-slate-600" /></Tooltip>
                    </h3>
-                   <p className="text-sm text-slate-400 leading-relaxed">
-                     {selectedIdea.blueprint.polish}
-                   </p>
+                   <div className="text-sm">
+                     <MarkdownRenderer content={selectedIdea.blueprint.polish} variant="dark" />
+                   </div>
                 </div>
 
                 <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
@@ -904,18 +937,18 @@ const App: React.FC = () => {
               </div>
               
               <div className="md:col-span-12">
-                 <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 flex flex-col md:flex-row gap-6 items-center">
+                 <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 flex flex-col md:flex-row gap-6 items-start">
                     <div className="bg-indigo-500/10 p-4 rounded-xl text-indigo-400 flex-shrink-0">
                        <Box size={32} />
                     </div>
-                    <div>
+                    <div className="flex-1">
                        <h3 className="text-lg font-bold text-white mb-2 flex items-center gap-2">
                          De 'Secret Sauce' (Abstractie)
                          <Tooltip content="Hoe je de complexiteit verbergt voor de gebruiker. De gebruiker wil geen code zien."><HelpCircle size={16} className="text-slate-600" /></Tooltip>
                        </h3>
-                       <p className="text-slate-300 leading-relaxed">
-                         {selectedIdea.blueprint.abstraction}
-                       </p>
+                       <div>
+                         <MarkdownRenderer content={selectedIdea.blueprint.abstraction} variant="dark" />
+                       </div>
                     </div>
                  </div>
               </div>
@@ -1082,77 +1115,77 @@ const App: React.FC = () => {
                 <button onClick={() => setShowPdfPreview(false)} className="p-2 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors"><X size={20} /></button>
               </div>
               <div className="flex-1 overflow-y-auto p-8 bg-slate-950 flex justify-center print-scroll-fix">
-                <div id="print-area" ref={pdfContentRef} className="bg-white text-slate-900 w-full max-w-[210mm] shadow-xl p-[15mm] min-h-[297mm] origin-top transform transition-transform">
-                    {/* PDF CONTENT HERE (SAME AS BEFORE) */}
-                    <div className="flex justify-between items-start border-b-2 border-slate-200 pb-6 mb-8">
+                <div id="print-area" ref={pdfContentRef} className="bg-white w-full max-w-[210mm] shadow-xl p-[15mm] min-h-[297mm] origin-top transform transition-transform" style={{ backgroundColor: '#ffffff', color: '#0f172a' }}>
+                    {/* PDF CONTENT HERE - ALL INLINE STYLES FOR RELIABILITY */}
+                    <div className="flex justify-between items-start pb-6 mb-8" style={{ borderBottom: '2px solid #e2e8f0' }}>
                       <div>
-                        <h1 className="text-3xl font-bold text-slate-900 mb-2 flex items-center gap-3"><span>{selectedIdea.emoji}</span> {selectedIdea.title}</h1>
-                        <p className="text-slate-600 text-base font-medium">{selectedIdea.oneLiner}</p>
+                        <h1 className="text-3xl font-bold mb-2 flex items-center gap-3" style={{ color: '#0f172a' }}><span>{selectedIdea.emoji}</span> {selectedIdea.title}</h1>
+                        <p className="text-base font-medium" style={{ color: '#475569' }}>{selectedIdea.oneLiner}</p>
                       </div>
                       <div className="text-right">
-                        <div className="text-[10px] text-slate-500 uppercase tracking-wider font-bold mb-1">Created with</div>
-                        <div className="text-indigo-600 font-bold text-lg">n8n SaaS Architect</div>
+                        <div className="text-[10px] uppercase tracking-wider font-bold mb-1" style={{ color: '#64748b' }}>Created with</div>
+                        <div className="font-bold text-lg" style={{ color: '#4f46e5' }}>n8n SaaS Architect</div>
                       </div>
                     </div>
 
                     <div className="grid grid-cols-3 gap-6 mb-10">
-                      <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                        <div className="text-[11px] text-slate-500 uppercase font-bold mb-1">Prijs Strategie</div>
-                        <div className="text-green-600 font-bold text-lg">{selectedIdea.blueprint.pricingStrategy}</div>
+                      <div className="p-4 rounded-xl" style={{ backgroundColor: '#f8fafc', border: '1px solid #e2e8f0' }}>
+                        <div className="text-[11px] uppercase font-bold mb-1" style={{ color: '#64748b' }}>Prijs Strategie</div>
+                        <div className="font-bold text-lg" style={{ color: '#16a34a' }}>{selectedIdea.blueprint.pricingStrategy}</div>
                       </div>
-                      <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                        <div className="text-[11px] text-slate-500 uppercase font-bold mb-1">Bouwtijd</div>
-                        <div className="text-indigo-600 font-bold text-lg">{selectedIdea.blueprint.speedToLaunch}</div>
+                      <div className="p-4 rounded-xl" style={{ backgroundColor: '#f8fafc', border: '1px solid #e2e8f0' }}>
+                        <div className="text-[11px] uppercase font-bold mb-1" style={{ color: '#64748b' }}>Bouwtijd</div>
+                        <div className="font-bold text-lg" style={{ color: '#4f46e5' }}>{selectedIdea.blueprint.speedToLaunch}</div>
                       </div>
-                      <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                        <div className="text-[11px] text-slate-500 uppercase font-bold mb-1">Complexiteit</div>
-                        <div className="text-slate-800 font-bold text-lg">{selectedIdea.blueprint.difficultyRating}/100</div>
+                      <div className="p-4 rounded-xl" style={{ backgroundColor: '#f8fafc', border: '1px solid #e2e8f0' }}>
+                        <div className="text-[11px] uppercase font-bold mb-1" style={{ color: '#64748b' }}>Complexiteit</div>
+                        <div className="font-bold text-lg" style={{ color: '#1e293b' }}>{selectedIdea.blueprint.difficultyRating}/100</div>
                       </div>
                     </div>
 
                     {analysisData && (analysisData.activity || analysisData.audience) && (
                       <div className="mb-10 avoid-break">
-                        <h2 className="text-xl font-bold text-indigo-900 mb-6 flex items-center gap-2 pb-2 border-b border-indigo-100">1. Bedrijfsanalyse</h2>
+                        <h2 className="text-xl font-bold mb-6 flex items-center gap-2 pb-2" style={{ color: '#312e81', borderBottom: '1px solid #e0e7ff' }}>1. Bedrijfsanalyse</h2>
                         <div className="space-y-6">
-                           {analysisData.activity && (<div><h4 className="font-bold text-slate-800 text-sm uppercase mb-1">Kernactiviteit</h4><div className="text-sm text-slate-700 leading-relaxed"><RichTextRenderer text={analysisData.activity} className="text-slate-700" /></div></div>)}
-                           {analysisData.audience && (<div><h4 className="font-bold text-slate-800 text-sm uppercase mb-1">Doelgroep</h4><div className="text-sm text-slate-700 leading-relaxed"><RichTextRenderer text={analysisData.audience} className="text-slate-700" /></div></div>)}
-                           {analysisData.tasks && (<div><h4 className="font-bold text-slate-800 text-sm uppercase mb-1">Kansen & Taken</h4><div className="text-sm text-slate-700 leading-relaxed"><RichTextRenderer text={analysisData.tasks} className="text-slate-700" /></div></div>)}
+                           {analysisData.activity && (<div><h4 className="font-bold text-sm uppercase mb-1" style={{ color: '#1e293b' }}>Kernactiviteit</h4><div className="text-sm"><MarkdownRenderer content={analysisData.activity} variant="light" /></div></div>)}
+                           {analysisData.audience && (<div><h4 className="font-bold text-sm uppercase mb-1" style={{ color: '#1e293b' }}>Doelgroep</h4><div className="text-sm"><MarkdownRenderer content={analysisData.audience} variant="light" /></div></div>)}
+                           {analysisData.tasks && (<div><h4 className="font-bold text-sm uppercase mb-1" style={{ color: '#1e293b' }}>Kansen & Taken</h4><div className="text-sm"><MarkdownRenderer content={analysisData.tasks} variant="light" /></div></div>)}
                         </div>
                       </div>
                     )}
 
                     <div className="avoid-break">
-                      <h2 className="text-xl font-bold text-indigo-900 mb-6 flex items-center gap-2 pb-2 border-b border-indigo-100">{analysisData ? '2. Het SaaS Concept' : '1. Het SaaS Concept'}</h2>
+                      <h2 className="text-xl font-bold mb-6 flex items-center gap-2 pb-2" style={{ color: '#312e81', borderBottom: '1px solid #e0e7ff' }}>{analysisData ? '2. Het SaaS Concept' : '1. Het SaaS Concept'}</h2>
                       <div className="space-y-6 mb-8">
-                          <div className="bg-red-50 p-5 rounded-lg border border-red-100"><h3 className="font-bold text-red-800 text-sm uppercase tracking-wide flex items-center gap-2 mb-2"><AlertCircle size={16} /> Het Pijnpunt</h3><p className="text-sm text-slate-800 leading-relaxed">{selectedIdea.blueprint.painPoint}</p></div>
-                          <div className="bg-green-50 p-5 rounded-lg border border-green-100"><h3 className="font-bold text-green-800 text-sm uppercase tracking-wide flex items-center gap-2 mb-2"><Target size={16} /> De Oplossing & Timing</h3><p className="text-sm text-slate-800 leading-relaxed">{selectedIdea.blueprint.whyNow}</p></div>
+                          <div className="p-5 rounded-lg" style={{ backgroundColor: '#fef2f2', border: '1px solid #fecaca' }}><h3 className="font-bold text-sm uppercase tracking-wide flex items-center gap-2 mb-2" style={{ color: '#991b1b' }}><AlertCircle size={16} /> Het Pijnpunt</h3><div className="text-sm"><MarkdownRenderer content={selectedIdea.blueprint.painPoint} variant="light" /></div></div>
+                          <div className="p-5 rounded-lg" style={{ backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0' }}><h3 className="font-bold text-sm uppercase tracking-wide flex items-center gap-2 mb-2" style={{ color: '#166534' }}><Target size={16} /> De Oplossing & Timing</h3><div className="text-sm"><MarkdownRenderer content={selectedIdea.blueprint.whyNow} variant="light" /></div></div>
                       </div>
-                      <div className="mb-8 pl-2"><h3 className="font-bold text-slate-900 text-sm uppercase border-b border-slate-200 pb-2 mb-4">MVP Features</h3><div className="grid grid-cols-1 gap-2">{selectedIdea.blueprint.mvpFeatures.map((f, i) => (<div key={i} className="flex items-start gap-3 text-sm text-slate-700"><div className="mt-1.5 w-1.5 h-1.5 bg-indigo-500 rounded-full shrink-0"></div>{f}</div>))}</div></div>
+                      <div className="mb-8 pl-2"><h3 className="font-bold text-sm uppercase pb-2 mb-4" style={{ color: '#0f172a', borderBottom: '1px solid #e2e8f0' }}>MVP Features</h3><div className="grid grid-cols-1 gap-2">{selectedIdea.blueprint.mvpFeatures.map((f, i) => (<div key={i} className="flex items-start gap-3 text-sm" style={{ color: '#1e293b' }}><div className="mt-1.5 w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: '#4f46e5' }}></div><span className="flex-1"><MarkdownInline content={f} variant="light" /></span></div>))}</div></div>
                     </div>
 
                     <div className="page-break"></div>
 
                     <div className="avoid-break mt-8">
-                       <h2 className="text-xl font-bold text-indigo-900 mb-6 flex items-center gap-2 pb-2 border-b border-indigo-100">{analysisData ? '3. De Techniek' : '2. De Techniek'}</h2>
-                       <div className="bg-slate-50 p-6 rounded-xl border border-slate-200 mb-8">
-                          <h3 className="font-bold text-indigo-900 text-base mb-4 flex items-center gap-2"><Workflow size={18} /> Automatisering Workflow (n8n)</h3>
-                          <p className="text-sm text-slate-700 leading-relaxed mb-4">{selectedIdea.blueprint.automation}</p>
-                          <div><div className="text-xs font-bold text-slate-500 uppercase mb-2">Benodigde n8n Nodes</div><div className="flex flex-wrap gap-2">{selectedIdea.blueprint.n8nNodes.map((node, i) => (<span key={i} className="px-3 py-1 bg-white border border-slate-300 text-xs text-slate-600 rounded font-mono">{node}</span>))}</div></div>
+                       <h2 className="text-xl font-bold mb-6 flex items-center gap-2 pb-2" style={{ color: '#312e81', borderBottom: '1px solid #e0e7ff' }}>{analysisData ? '3. De Techniek' : '2. De Techniek'}</h2>
+                       <div className="p-6 rounded-xl mb-8" style={{ backgroundColor: '#f8fafc', border: '1px solid #e2e8f0' }}>
+                          <h3 className="font-bold text-base mb-4 flex items-center gap-2" style={{ color: '#312e81' }}><Workflow size={18} /> Automatisering Workflow (n8n)</h3>
+                          <div className="text-sm mb-4"><MarkdownRenderer content={selectedIdea.blueprint.automation} variant="light" /></div>
+                          <div><div className="text-xs font-bold uppercase mb-2" style={{ color: '#334155' }}>Benodigde n8n Nodes</div><div className="flex flex-wrap gap-2">{selectedIdea.blueprint.n8nNodes.map((node, i) => (<span key={i} className="px-3 py-1 text-xs rounded font-mono" style={{ backgroundColor: '#ffffff', border: '1px solid #cbd5e1', color: '#1e293b' }}>{node}</span>))}</div></div>
                         </div>
                         <div className="grid grid-cols-2 gap-10 mb-8">
-                          <div><h3 className="font-bold text-slate-900 text-xs uppercase mb-3">Tech Stack</h3><div className="flex flex-wrap gap-2">{selectedIdea.blueprint.techStack.map((tech, i) => (<span key={i} className="text-xs text-slate-600 bg-slate-100 px-3 py-1 rounded border border-slate-200 font-medium">{tech}</span>))}</div></div>
-                          <div><h3 className="font-bold text-slate-900 text-xs uppercase mb-3">Marketing Kanalen</h3><div className="flex flex-col gap-2">{selectedIdea.blueprint.marketingChannels.map((m, i) => (<span key={i} className="text-xs text-slate-600 flex items-center gap-2"><CheckCircle2 size={12} className="text-green-500" /> {m}</span>))}</div></div>
+                          <div><h3 className="font-bold text-xs uppercase mb-3" style={{ color: '#1e293b' }}>Tech Stack</h3><div className="flex flex-wrap gap-2">{selectedIdea.blueprint.techStack.map((tech, i) => (<span key={i} className="text-xs px-3 py-1 rounded font-medium" style={{ backgroundColor: '#f1f5f9', border: '1px solid #cbd5e1', color: '#1e293b' }}>{tech}</span>))}</div></div>
+                          <div><h3 className="font-bold text-xs uppercase mb-3" style={{ color: '#1e293b' }}>Marketing Kanalen</h3><div className="flex flex-col gap-2">{selectedIdea.blueprint.marketingChannels.map((m, i) => (<span key={i} className="text-xs flex items-center gap-2" style={{ color: '#1e293b' }}><CheckCircle2 size={12} style={{ color: '#16a34a' }} /><MarkdownInline content={m} variant="light" /></span>))}</div></div>
                         </div>
                     </div>
 
-                    <div className="avoid-break mt-6 pt-6 border-t-2 border-slate-100">
+                    <div className="avoid-break mt-6 pt-6" style={{ borderTop: '2px solid #f1f5f9' }}>
                           <div className="flex gap-4 items-start mb-6">
-                              <div className="p-2 bg-indigo-50 rounded-lg text-indigo-600 mt-1"><Box size={20} /></div>
-                              <div><h3 className="font-bold text-slate-900 text-base">User Experience (Abstractie)</h3><p className="text-sm text-slate-600 mt-1 leading-relaxed">{selectedIdea.blueprint.abstraction}</p></div>
+                              <div className="p-2 rounded-lg mt-1" style={{ backgroundColor: '#eef2ff', color: '#4f46e5' }}><Box size={20} /></div>
+                              <div className="flex-1"><h3 className="font-bold text-base" style={{ color: '#0f172a' }}>User Experience (Abstractie)</h3><div className="text-sm mt-1" style={{ color: '#1e293b' }}><MarkdownRenderer content={selectedIdea.blueprint.abstraction} variant="light" /></div></div>
                           </div>
                           <div className="flex gap-4 items-start">
-                              <div className="p-2 bg-purple-50 rounded-lg text-purple-600 mt-1"><Gift size={20} /></div>
-                              <div><h3 className="font-bold text-slate-900 text-base">Eindproduct (Polish)</h3><p className="text-sm text-slate-600 mt-1 leading-relaxed">{selectedIdea.blueprint.polish}</p></div>
+                              <div className="p-2 rounded-lg mt-1" style={{ backgroundColor: '#faf5ff', color: '#9333ea' }}><Gift size={20} /></div>
+                              <div className="flex-1"><h3 className="font-bold text-base" style={{ color: '#0f172a' }}>Eindproduct (Polish)</h3><div className="text-sm mt-1" style={{ color: '#1e293b' }}><MarkdownRenderer content={selectedIdea.blueprint.polish} variant="light" /></div></div>
                           </div>
                     </div>
                 </div>
